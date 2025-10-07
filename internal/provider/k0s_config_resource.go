@@ -18,6 +18,8 @@ import (
 	provider_action "github.com/mirantis/terraform-provider-k0sctl/internal/k0sctl/action"
 
 	k0sctl_v1beta1 "github.com/k0sproject/k0sctl/pkg/apis/k0sctl.k0sproject.io/v1beta1"
+	"github.com/k0sproject/k0sctl/pkg/apis/k0sctl.k0sproject.io/v1beta1/cluster"
+	log "github.com/sirupsen/logrus"
 )
 
 var _ resource.Resource = &K0sctlConfigResource{}
@@ -139,11 +141,24 @@ func (r *K0sctlConfigResource) Read(ctx context.Context, req resource.ReadReques
 }
 
 func (r *K0sctlConfigResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var kcsm k0sctlSchemaModel
-	var kcc k0sctl_v1beta1.Cluster
+	var oldkcsm, kcsm k0sctlSchemaModel
+	var oldkcc, kcc k0sctl_v1beta1.Cluster
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &oldkcsm)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if statetkcc, ds := oldkcsm.Cluster(ctx); ds.HasError() {
+		resp.Diagnostics.Append(ds...)
+	} else if err := statetkcc.Validate(); err != nil {
+		resp.Diagnostics.Append(diag.NewErrorDiagnostic("k0sctl cluster validation failed", err.Error()))
+	} else {
+		oldkcc = statetkcc
+	}
+	log.Info("k0sctl cluster loaded from state")
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &kcsm)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -155,6 +170,23 @@ func (r *K0sctlConfigResource) Update(ctx context.Context, req resource.UpdateRe
 	} else {
 		kcc = tkcc
 	}
+
+	// mark removed hosts in oldHosts for Reset and add them to the final config
+	// these hosts will be Reset; they are also removed from State
+	oldHosts := oldkcc.Spec.Hosts
+	newHosts := kcc.Spec.Hosts
+	diff := oldHosts.Filter(func(h *cluster.Host) bool {
+		for _, newHost := range newHosts {
+			if h.Address() == newHost.Address() {
+				return false
+			}
+		}
+		return true
+	})
+	for _, host := range diff {
+		host.Reset = true
+	}
+	kcc.Spec.Hosts = append(kcc.Spec.Hosts, diff...)
 
 	var pm *k0sctl_phase.Manager
 	var kc io.ReadWriter // will be used to contain kubeconfig, written in the phasemanager, and passed back to the model

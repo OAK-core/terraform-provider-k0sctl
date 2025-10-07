@@ -12,8 +12,6 @@ import (
 	"github.com/k0sproject/k0sctl/analytics"
 	"github.com/k0sproject/k0sctl/phase"
 
-	provider_phase "github.com/mirantis/terraform-provider-k0sctl/internal/k0sctl/phase"
-
 	log "github.com/sirupsen/logrus"
 )
 
@@ -79,7 +77,7 @@ func (a Apply) Run() error {
 		&phase.UpgradeWorkers{NoDrain: a.NoDrain},
 		&phase.ResetWorkers{NoDrain: a.NoDrain},
 		&phase.ResetControllers{NoDrain: a.NoDrain},
-		&provider_phase.ValidateHostsExtended{},
+		// &provider_phase.ValidateHostsExtended{}, // disabled because this phase removes controller+worker nodes from cluster
 		&phase.RunHooks{Stage: "after", Action: "apply"},
 	)
 
