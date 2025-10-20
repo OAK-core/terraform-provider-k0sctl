@@ -94,15 +94,16 @@ func (r *K0sctlConfigResource) Create(ctx context.Context, req resource.CreateRe
 
 	kc = bytes.NewBuffer([]byte{})
 
+	k0sctl_phase.Force = kcsm.Force.ValueBool()
 	aa := k0sctl_action.Apply{
-		Force:         kcsm.Force.ValueBool(),
-		Manager:       pm,
-		KubeconfigOut: kc,
-		//KubeconfigAPIAddress:  kcsm.??
-		NoWait:                kcsm.NoWait.ValueBool(),
-		NoDrain:               kcsm.NoDrain.ValueBool(),
-		DisableDowngradeCheck: kcsm.DisableDowngradeCheck.ValueBool(),
-		RestoreFrom:           kcsm.RestoreFrom.ValueString(),
+		ApplyOptions: k0sctl_action.ApplyOptions{
+			Manager:               pm,
+			DisableDowngradeCheck: kcsm.DisableDowngradeCheck.ValueBool(),
+			NoWait:                kcsm.NoWait.ValueBool(),
+			NoDrain:               kcsm.NoDrain.ValueBool(),
+			RestoreFrom:           kcsm.RestoreFrom.ValueString(),
+			KubeconfigOut:         kc,
+		},
 	}
 
 	kcsm.KubeYaml = types.StringNull()
@@ -118,7 +119,7 @@ func (r *K0sctlConfigResource) Create(ctx context.Context, req resource.CreateRe
 	} else if r.testingMode {
 		resp.Diagnostics.AddWarning("testing mode warning", "k0sctl config resource handler is in testing mode, no installation will be run.")
 		resp.Diagnostics.Append(resp.State.Set(ctx, kcsm)...)
-	} else if err := aa.Run(); err != nil {
+	} else if err := aa.Run(ctx); err != nil {
 		resp.Diagnostics.Append(diag.NewErrorDiagnostic("error running k0sctl apply", err.Error()))
 	} else {
 		// populate the model kubernetes conf from the action
@@ -231,7 +232,7 @@ func (r *K0sctlConfigResource) Update(ctx context.Context, req resource.UpdateRe
 		if diags := resp.State.Set(ctx, kcsm); diags != nil {
 			resp.Diagnostics.Append(diags...)
 		}
-	} else if err := aa.Run(); err != nil {
+	} else if err := aa.Run(ctx); err != nil {
 		resp.Diagnostics.Append(diag.NewErrorDiagnostic("error running k0sctl apply", err.Error()))
 	} else {
 		// populate the model kubernetes conf from the action
@@ -278,10 +279,10 @@ func (r *K0sctlConfigResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 
+	k0sctl_phase.Force = true // k0sctl asks for confirmation if this is not set to true
 	ra := k0sctl_action.Reset{
 		Manager: pm,
-		Force:   true, // k0sctl asks for confirmation if this is not set to true
-		Stdout:  nil,  // TODO: turn this into a tflog outputter?
+		Stdout:  nil, // TODO: turn this into a tflog outputter?
 	}
 
 	if kcsm.SkipDestroy.ValueBool() {
@@ -294,7 +295,7 @@ func (r *K0sctlConfigResource) Delete(ctx context.Context, req resource.DeleteRe
 		if diags := resp.State.Set(ctx, kcsm); diags != nil {
 			resp.Diagnostics.Append(diags...)
 		}
-	} else if err := ra.Run(); err != nil {
+	} else if err := ra.Run(ctx); err != nil {
 		resp.Diagnostics.Append(diag.NewErrorDiagnostic("error running k0sctl reset", err.Error()))
 		return
 	}
