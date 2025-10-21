@@ -18,6 +18,8 @@ import (
 	provider_action "github.com/mirantis/terraform-provider-k0sctl/internal/k0sctl/action"
 
 	k0sctl_v1beta1 "github.com/k0sproject/k0sctl/pkg/apis/k0sctl.k0sproject.io/v1beta1"
+	"github.com/k0sproject/k0sctl/pkg/apis/k0sctl.k0sproject.io/v1beta1/cluster"
+	log "github.com/sirupsen/logrus"
 )
 
 var _ resource.Resource = &K0sctlConfigResource{}
@@ -92,15 +94,16 @@ func (r *K0sctlConfigResource) Create(ctx context.Context, req resource.CreateRe
 
 	kc = bytes.NewBuffer([]byte{})
 
+	k0sctl_phase.Force = kcsm.Force.ValueBool()
 	aa := k0sctl_action.Apply{
-		Force:         kcsm.Force.ValueBool(),
-		Manager:       pm,
-		KubeconfigOut: kc,
-		//KubeconfigAPIAddress:  kcsm.??
-		NoWait:                kcsm.NoWait.ValueBool(),
-		NoDrain:               kcsm.NoDrain.ValueBool(),
-		DisableDowngradeCheck: kcsm.DisableDowngradeCheck.ValueBool(),
-		RestoreFrom:           kcsm.RestoreFrom.ValueString(),
+		ApplyOptions: k0sctl_action.ApplyOptions{
+			Manager:               pm,
+			DisableDowngradeCheck: kcsm.DisableDowngradeCheck.ValueBool(),
+			NoWait:                kcsm.NoWait.ValueBool(),
+			NoDrain:               kcsm.NoDrain.ValueBool(),
+			RestoreFrom:           kcsm.RestoreFrom.ValueString(),
+			KubeconfigOut:         kc,
+		},
 	}
 
 	kcsm.KubeYaml = types.StringNull()
@@ -116,7 +119,7 @@ func (r *K0sctlConfigResource) Create(ctx context.Context, req resource.CreateRe
 	} else if r.testingMode {
 		resp.Diagnostics.AddWarning("testing mode warning", "k0sctl config resource handler is in testing mode, no installation will be run.")
 		resp.Diagnostics.Append(resp.State.Set(ctx, kcsm)...)
-	} else if err := aa.Run(); err != nil {
+	} else if err := aa.Run(ctx); err != nil {
 		resp.Diagnostics.Append(diag.NewErrorDiagnostic("error running k0sctl apply", err.Error()))
 	} else {
 		// populate the model kubernetes conf from the action
@@ -139,11 +142,24 @@ func (r *K0sctlConfigResource) Read(ctx context.Context, req resource.ReadReques
 }
 
 func (r *K0sctlConfigResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var kcsm k0sctlSchemaModel
-	var kcc k0sctl_v1beta1.Cluster
+	var oldkcsm, kcsm k0sctlSchemaModel
+	var oldkcc, kcc k0sctl_v1beta1.Cluster
+
+	resp.Diagnostics.Append(req.State.Get(ctx, &oldkcsm)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if statetkcc, ds := oldkcsm.Cluster(ctx); ds.HasError() {
+		resp.Diagnostics.Append(ds...)
+	} else if err := statetkcc.Validate(); err != nil {
+		resp.Diagnostics.Append(diag.NewErrorDiagnostic("k0sctl cluster validation failed", err.Error()))
+	} else {
+		oldkcc = statetkcc
+	}
+	log.Info("k0sctl cluster loaded from state")
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &kcsm)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -155,6 +171,23 @@ func (r *K0sctlConfigResource) Update(ctx context.Context, req resource.UpdateRe
 	} else {
 		kcc = tkcc
 	}
+
+	// mark removed hosts in oldHosts for Reset and add them to the final config
+	// these hosts will be Reset; they are also removed from State
+	oldHosts := oldkcc.Spec.Hosts
+	newHosts := kcc.Spec.Hosts
+	diff := oldHosts.Filter(func(h *cluster.Host) bool {
+		for _, newHost := range newHosts {
+			if h.Address() == newHost.Address() {
+				return false
+			}
+		}
+		return true
+	})
+	for _, host := range diff {
+		host.Reset = true
+	}
+	kcc.Spec.Hosts = append(kcc.Spec.Hosts, diff...)
 
 	var pm *k0sctl_phase.Manager
 	var kc io.ReadWriter // will be used to contain kubeconfig, written in the phasemanager, and passed back to the model
@@ -199,7 +232,7 @@ func (r *K0sctlConfigResource) Update(ctx context.Context, req resource.UpdateRe
 		if diags := resp.State.Set(ctx, kcsm); diags != nil {
 			resp.Diagnostics.Append(diags...)
 		}
-	} else if err := aa.Run(); err != nil {
+	} else if err := aa.Run(ctx); err != nil {
 		resp.Diagnostics.Append(diag.NewErrorDiagnostic("error running k0sctl apply", err.Error()))
 	} else {
 		// populate the model kubernetes conf from the action
@@ -246,10 +279,10 @@ func (r *K0sctlConfigResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 
+	k0sctl_phase.Force = true // k0sctl asks for confirmation if this is not set to true
 	ra := k0sctl_action.Reset{
 		Manager: pm,
-		Force:   true, // k0sctl asks for confirmation if this is not set to true
-		Stdout:  nil,  // TODO: turn this into a tflog outputter?
+		Stdout:  nil, // TODO: turn this into a tflog outputter?
 	}
 
 	if kcsm.SkipDestroy.ValueBool() {
@@ -262,7 +295,7 @@ func (r *K0sctlConfigResource) Delete(ctx context.Context, req resource.DeleteRe
 		if diags := resp.State.Set(ctx, kcsm); diags != nil {
 			resp.Diagnostics.Append(diags...)
 		}
-	} else if err := ra.Run(); err != nil {
+	} else if err := ra.Run(ctx); err != nil {
 		resp.Diagnostics.Append(diag.NewErrorDiagnostic("error running k0sctl reset", err.Error()))
 		return
 	}

@@ -1,6 +1,7 @@
 package action
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,10 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/k0sproject/k0sctl/analytics"
 	"github.com/k0sproject/k0sctl/phase"
-
-	provider_phase "github.com/mirantis/terraform-provider-k0sctl/internal/k0sctl/phase"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -38,7 +36,7 @@ type Apply struct {
 	ConfigPath string
 }
 
-func (a Apply) Run() error {
+func (a Apply) Run(ctx context.Context) error {
 	start := time.Now()
 
 	phase.NoWait = a.NoWait
@@ -79,12 +77,13 @@ func (a Apply) Run() error {
 		&phase.UpgradeWorkers{NoDrain: a.NoDrain},
 		&phase.ResetWorkers{NoDrain: a.NoDrain},
 		&phase.ResetControllers{NoDrain: a.NoDrain},
-		&provider_phase.ValidateHostsExtended{},
+		// &provider_phase.ValidateHostsExtended{}, // disabled because this phase removes controller+worker nodes from cluster
 		&phase.RunHooks{Stage: "after", Action: "apply"},
 	)
 
 	if a.KubeconfigOut != nil {
-		a.Manager.AddPhase(&phase.GetKubeconfig{APIAddress: a.KubeconfigAPIAddress})
+		log.Errorf("Metadata.Name: %s", a.Manager.Config.Metadata.Name)              // this is right...
+		a.Manager.AddPhase(&phase.GetKubeconfig{APIAddress: a.KubeconfigAPIAddress}) // MUST update k0sctl!! v0.26.0
 	}
 
 	a.Manager.AddPhase(
@@ -92,17 +91,13 @@ func (a Apply) Run() error {
 		&phase.Disconnect{},
 	)
 
-	analytics.Client.Publish("apply-start", map[string]interface{}{})
-
 	var result error
 
-	if result = a.Manager.Run(); result != nil {
-		analytics.Client.Publish("apply-failure", map[string]interface{}{"clusterID": a.Manager.Config.Spec.K0s.Metadata.ClusterID})
+	if result = a.Manager.Run(ctx); result != nil {
 		log.Info(phase.Colorize.Red("==> Apply failed").String())
 		return result
 	}
 
-	analytics.Client.Publish("apply-success", map[string]interface{}{"duration": time.Since(start), "clusterID": a.Manager.Config.Spec.K0s.Metadata.ClusterID})
 	if a.KubeconfigOut != nil {
 		if _, err := a.KubeconfigOut.Write([]byte(a.Manager.Config.Metadata.Kubeconfig)); err != nil {
 			log.Warnf("failed to write kubeconfig to %s: %v", a.KubeconfigOut, err)
@@ -111,7 +106,7 @@ func (a Apply) Run() error {
 
 	duration := time.Since(start).Truncate(time.Second)
 	text := fmt.Sprintf("==> Finished in %s", duration)
-	log.Infof(phase.Colorize.Green(text).String())
+	log.Infof("%s", phase.Colorize.Green(text).String())
 
 	for _, host := range a.Manager.Config.Spec.Hosts {
 		if host.Reset {
@@ -145,7 +140,7 @@ func (a Apply) Run() error {
 		}
 
 		log.Infof("Tip: To access the cluster you can now fetch the admin kubeconfig using:")
-		log.Infof("     " + phase.Colorize.Cyan(cmd.String()).String())
+		log.Infof("     %s", phase.Colorize.Cyan(cmd.String()).String())
 	}
 
 	return nil
