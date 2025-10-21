@@ -106,7 +106,7 @@ func (a Apply) Run(ctx context.Context) error {
 
 	duration := time.Since(start).Truncate(time.Second)
 	text := fmt.Sprintf("==> Finished in %s", duration)
-	log.Infof(phase.Colorize.Green(text).String())
+	log.Infof("%s", phase.Colorize.Green(text).String())
 
 	for _, host := range a.Manager.Config.Spec.Hosts {
 		if host.Reset {
@@ -140,7 +140,7 @@ func (a Apply) Run(ctx context.Context) error {
 		}
 
 		log.Infof("Tip: To access the cluster you can now fetch the admin kubeconfig using:")
-		log.Infof("     " + phase.Colorize.Cyan(cmd.String()).String())
+		log.Infof("     %s", phase.Colorize.Cyan(cmd.String()).String())
 	}
 
 	return nil
